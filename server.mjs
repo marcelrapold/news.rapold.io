@@ -237,8 +237,22 @@ if (discordAlerter.isConfigured) {
 const app = express();
 app.use(express.static(join(ROOT, 'dashboard/public')));
 
+const DASHBOARD_SNAPSHOT = join(RUNS_DIR, 'dashboard-snapshot.json');
+
+function rehydrateFromSnapshot() {
+  if (currentData) return;
+  try {
+    if (existsSync(DASHBOARD_SNAPSHOT)) {
+      currentData = JSON.parse(readFileSync(DASHBOARD_SNAPSHOT, 'utf8'));
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 // Serve loading page until first sweep completes, then the dashboard with injected locale
 app.get('/', (req, res) => {
+  rehydrateFromSnapshot();
   if (!currentData) {
     res.sendFile(join(ROOT, 'dashboard/public/loading.html'));
   } else {
@@ -256,8 +270,24 @@ app.get('/', (req, res) => {
 
 // API: current data
 app.get('/api/data', (req, res) => {
+  rehydrateFromSnapshot();
   if (!currentData) return res.status(503).json({ error: 'No data yet — first sweep in progress' });
   res.json(currentData);
+});
+
+// Vercel: one long request runs the full sweep in-process (serverless has no background scheduler)
+app.get('/api/bootstrap-vercel', async (req, res) => {
+  if (!IS_VERCEL) return res.status(404).json({ error: 'not available' });
+  rehydrateFromSnapshot();
+  if (currentData) return res.json({ ok: true, cached: true });
+  try {
+    await runSweepCycle();
+    if (!currentData) return res.status(503).json({ error: 'Sweep finished but no dashboard data' });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[Crucix] bootstrap-vercel:', err?.message || err);
+    return res.status(500).json({ error: String(err?.message || err) });
+  }
 });
 
 // API: health check
@@ -384,6 +414,14 @@ async function runSweepCycle() {
     memory.pruneAlertedSignals();
 
     currentData = synthesized;
+
+    if (IS_VERCEL) {
+      try {
+        writeFileSync(DASHBOARD_SNAPSHOT, JSON.stringify(currentData));
+      } catch (e) {
+        console.error('[Crucix] snapshot write failed:', e.message);
+      }
+    }
 
     // 6. Push to all connected browsers
     broadcast({ type: 'update', data: currentData });
