@@ -48,6 +48,8 @@ import { briefing as cisaKev } from './sources/cisa-kev.mjs';
 import { briefing as cloudflareRadar } from './sources/cloudflare-radar.mjs';
 
 const SOURCE_TIMEOUT_MS = 30_000; // 30s max per individual source
+const VERCEL_LITE_TIMEOUT_MS = 6_000; // stay under ~10s serverless limit (Hobby)
+const IS_VERCEL = !!process.env.VERCEL;
 
 export async function runSource(name, fn, ...args) {
   const start = Date.now();
@@ -66,7 +68,67 @@ export async function runSource(name, fn, ...args) {
   }
 }
 
+async function runSourceLite(name, fn, ...args) {
+  const start = Date.now();
+  let timer;
+  try {
+    const dataPromise = fn(...args);
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Source ${name} timed out after ${VERCEL_LITE_TIMEOUT_MS / 1000}s`)),
+        VERCEL_LITE_TIMEOUT_MS
+      );
+    });
+    const data = await Promise.race([dataPromise, timeoutPromise]);
+    return { name, status: 'ok', durationMs: Date.now() - start, data };
+  } catch (e) {
+    return { name, status: 'error', durationMs: Date.now() - start, error: e.message };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Subset sweep for Vercel serverless (Hobby ~10s function cap). Set CRUCIX_FULL_SWEEP=1 + Pro maxDuration for full 29 sources. */
+export async function fullBriefingVercelLite() {
+  console.error('[Crucix] Vercel lite sweep — 10 fast sources (6s each)...');
+  const start = Date.now();
+  const allPromises = [
+    runSourceLite('GDELT', gdelt),
+    runSourceLite('OpenSky', opensky),
+    runSourceLite('YFinance', yfinance),
+    runSourceLite('GSCPI', gscpi),
+    runSourceLite('Treasury', treasury),
+    runSourceLite('WHO', who),
+    runSourceLite('Space', space),
+    runSourceLite('NOAA', noaa),
+    runSourceLite('FRED', fred, process.env.FRED_API_KEY),
+    runSourceLite('ReliefWeb', reliefweb),
+  ];
+  const results = await Promise.allSettled(allPromises);
+  const sources = results.map(r => (r.status === 'fulfilled' ? r.value : { status: 'failed', error: r.reason?.message }));
+  const totalMs = Date.now() - start;
+  const output = {
+    crucix: {
+      version: '2.0.0',
+      timestamp: new Date().toISOString(),
+      totalDurationMs: totalMs,
+      sourcesQueried: sources.length,
+      sourcesOk: sources.filter(s => s.status === 'ok').length,
+      sourcesFailed: sources.filter(s => s.status !== 'ok').length,
+      vercelLite: true,
+    },
+    sources: Object.fromEntries(sources.filter(s => s.status === 'ok').map(s => [s.name, s.data])),
+    errors: sources.filter(s => s.status !== 'ok').map(s => ({ name: s.name, error: s.error })),
+    timing: Object.fromEntries(sources.map(s => [s.name, { status: s.status, ms: s.durationMs }])),
+  };
+  console.error(`[Crucix] Vercel lite sweep done in ${totalMs}ms — ${output.crucix.sourcesOk}/${sources.length} OK`);
+  return output;
+}
+
 export async function fullBriefing() {
+  if (IS_VERCEL && process.env.CRUCIX_FULL_SWEEP !== '1') {
+    return fullBriefingVercelLite();
+  }
   console.error('[Crucix] Starting intelligence sweep — 29 sources...');
   const start = Date.now();
 
