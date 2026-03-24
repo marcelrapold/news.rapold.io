@@ -57,20 +57,10 @@ html,body{height:100%;background:var(--bg);color:var(--text);font-family:var(--m
 </div>
 
 <script>
-(async function boot() {
-  try {
-    const ctrl = new AbortController();
-    const kill = setTimeout(() => ctrl.abort(), 180000);
-    const br = await fetch('/api/bootstrap-vercel', { signal: ctrl.signal });
-    clearTimeout(kill);
-    if (br.ok) {
-      const j = await br.json();
-      if (j && j.ok) {
-        location.replace('/');
-        return;
-      }
-    }
-  } catch (_) { /* local dev: 404 / abort — fall through */ }
+// Vercel serverless: one long request must run the sweep (see server GET /?awaitSweep=1). Avoid redirect loop.
+if (window.__CRUCIX_VERCEL__ && !location.search.includes('awaitSweep')) {
+  location.replace('/?awaitSweep=1');
+} else {
 
 const SWEEP_ESTIMATE_S = 50; // estimated sweep duration in seconds
 
@@ -179,7 +169,8 @@ const pollInterval = setInterval(() => {
     if (r.ok) goToDashboard();
   }).catch(() => {});
 }, 5000);
-})();
+
+}
 </script>
 </body>
 </html>

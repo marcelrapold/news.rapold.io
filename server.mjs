@@ -251,10 +251,27 @@ function rehydrateFromSnapshot() {
 }
 
 // Serve loading page until first sweep completes, then the dashboard with injected locale
-app.get('/', (req, res) => {
+// Vercel: `/?awaitSweep=1` runs the full sweep in this single request (no cross-instance RAM /tmp gap)
+app.get('/', async (req, res) => {
+  rehydrateFromSnapshot();
+  if (!currentData && IS_VERCEL && req.query.awaitSweep === '1') {
+    try {
+      await runSweepCycle();
+      rehydrateFromSnapshot();
+    } catch (err) {
+      console.error('[Crucix] awaitSweep sweep failed:', err?.message || err);
+    }
+  }
   rehydrateFromSnapshot();
   if (!currentData) {
-    res.sendFile(join(ROOT, 'dashboard/public/loading.html'));
+    const loadingPath = join(ROOT, 'dashboard/public/loading.html');
+    if (IS_VERCEL) {
+      let html = readFileSync(loadingPath, 'utf8');
+      html = html.replace('<head>', '<head>\n<script>window.__CRUCIX_VERCEL__=1</script>');
+      res.type('html').send(html);
+    } else {
+      res.sendFile(loadingPath);
+    }
   } else {
     const htmlPath = join(ROOT, 'dashboard/public/jarvis.html');
     let html = readFileSync(htmlPath, 'utf-8');
