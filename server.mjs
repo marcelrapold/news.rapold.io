@@ -19,7 +19,9 @@ import { DiscordAlerter } from './lib/alerts/discord.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
-const RUNS_DIR = join(ROOT, 'runs');
+const IS_VERCEL = !!process.env.VERCEL;
+// Vercel serverless: only /tmp is writable
+const RUNS_DIR = IS_VERCEL ? join('/tmp', 'crucix-runs') : join(ROOT, 'runs');
 const MEMORY_DIR = join(RUNS_DIR, 'memory');
 
 // Ensure directories exist
@@ -137,8 +139,10 @@ if (telegramAlerter.isConfigured) {
     return '📊 Portfolio integration requires Alpaca MCP connection.\nUse the Crucix dashboard or Claude agent for portfolio queries.';
   });
 
-  // Start polling for bot commands
-  telegramAlerter.startPolling(config.telegram.botPollingInterval);
+  // Long-polling bots are incompatible with serverless cold starts
+  if (!IS_VERCEL) {
+    telegramAlerter.startPolling(config.telegram.botPollingInterval);
+  }
 }
 
 // === Discord Bot ===
@@ -222,10 +226,11 @@ if (discordAlerter.isConfigured) {
     return '📊 Portfolio integration requires Alpaca MCP connection.\nUse the Crucix dashboard or Claude agent for portfolio queries.';
   });
 
-  // Start the Discord bot (non-blocking — connection happens async)
-  discordAlerter.start().catch(err => {
-    console.error('[Crucix] Discord bot startup failed (non-fatal):', err.message);
-  });
+  if (!IS_VERCEL) {
+    discordAlerter.start().catch(err => {
+      console.error('[Crucix] Discord bot startup failed (non-fatal):', err.message);
+    });
+  }
 }
 
 // === Express Server ===
@@ -303,6 +308,9 @@ function broadcast(data) {
     try { client.write(msg); } catch { sseClients.delete(client); }
   }
 }
+
+export { app };
+export default app;
 
 // === Sweep Cycle ===
 async function runSweepCycle() {
@@ -468,7 +476,9 @@ process.on('uncaughtException', (err) => {
   console.error('[Crucix] Uncaught exception:', err?.stack || err?.message || err);
 });
 
-start().catch(err => {
-  console.error('[Crucix] FATAL — Server failed to start:', err?.stack || err?.message || err);
-  process.exit(1);
-});
+if (!IS_VERCEL) {
+  start().catch(err => {
+    console.error('[Crucix] FATAL — Server failed to start:', err?.stack || err?.message || err);
+    process.exit(1);
+  });
+}
